@@ -1,84 +1,68 @@
 const fs = require("fs")
 const cors = require('cors')
-const path = require("path")
-const axios = require("axios")
+const http = require('http');
 const express = require("express")
-const haversine = require('haversine-distance');
+const socketIo = require('socket.io');
+const bodyParser = require('body-parser')
+const { Client, GatewayIntentBits } = require("discord.js")
+
 const totalBusStops = require("./bus_stops.json")
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildModeration,
+    ]
+})
+
 require('dotenv').config()
 
-const app = express()
-app.listen(80, () => console.log("ready! http://localhost"))
-app.use(cors())
-app.get("/nearby-busstops", (req, res) => {
-    const poi = { "lat": Number(req.query.lat), "lon": Number(req.query.lon) };
-    const nearestBusStop = findNearestBusStop(poi, totalBusStops);
-    res.send(nearestBusStop)
-})
-
-app.get("/search-busstops", (req, res) => {
-    const q = req.query.q
-    res.send(
-        totalBusStops.filter(bs =>
-            bs.BusStopCode.startsWith(q) ||
-            bs.Description.toLowerCase().includes(q.toLowerCase())
-        )
-            .toSpliced(45)
-    )
-})
-
-app.get("/bus-arrival", async (req, res) => {
-    const busStopCode = req.query.BusStopCode
-
-    const headersList = { "AccountKey": process.env.datamall_key }
-    const url = `http://datamall2.mytransport.sg/ltaodataservice/BusArrivalv2?BusStopCode=${busStopCode}`
-    const reqOptions = { url: url, method: "GET", headers: headersList }
-    const response = await axios.request(reqOptions);
-
-    res.send(response.data.Services);
-    
-})
-const findNearestBusStop = (poi, busStops) => {
-    const maxDistance = Infinity
-    const maxResults = 45
-    const nearbyBusStops = [];
-
-    busStops.forEach(busStop => {
-        const busStopCoords = {
-            lat: busStop.Latitude,
-            lon: busStop.Longitude
-        };
-
-        const distance = haversine(poi, busStopCoords);
-
-        if (distance <= maxDistance) {
-            nearbyBusStops.push({ busStop, distance });
-        }
-    });
-
-    // Sort the nearby bus stops by distance
-    nearbyBusStops.sort((a, b) => a.distance - b.distance);
-
-    // Return the nearest 45 bus stops
-    return nearbyBusStops.slice(0, maxResults).map(item => item.busStop);
-};
-
-function reloadBusStops(){
-    var busStops = []
-
-    call()
-    async function call(page = 0) {
-        const headersList = { "AccountKey": process.env.datamall_key }
-        const url = `http://datamall2.mytransport.sg/ltaodataservice/BusStops?$skip=${page * 500}`
-        const reqOptions = { url: url, method: "GET", headers: headersList }
-        const response = await axios.request(reqOptions);
-        const resLength = response.data.value.length
-
-        console.log(url);
-        busStops = busStops.concat(response.data.value)
-
-        if (resLength == 500) return call(page + 1)
-        console.log("finished");
-        fs.writeFileSync(path.join(__dirname, "bus_stops.json"), JSON.stringify(busStops))
-    }
+const global = {
+    discordClient: client,
+    discordClientReady: false,
+    totalBusStops: totalBusStops,
+    cache: {},
+    tokens: {},
+    channelsBeingCreated: []
 }
+
+const app = express()
+const server = http.createServer(app);
+const io = socketIo(server)
+
+client.on("ready", () => {
+    console.log("Discord Bot is on")
+    global.discordClientReady = true
+})
+server.listen(80, () => {
+    console.log("API server is on")
+})
+
+app.use(bodyParser.json())
+app.use(cors({
+    origin: ['http://localhost:3000', "https://rurutbl.luluhoy.tech", 'http://localhost', "https://api.luluhoy.tech"],
+    optionsSuccessStatus: 200
+}))
+
+client.on("messageCreate", (msg) => {
+    io.emit('message-' + msg.channel.name.toLowerCase(), msg);
+})
+
+fs.readdir('./routes/', async (err, routes) => {
+    if (err) return console.error(err);
+    routes.forEach(route => {
+        if (!route.endsWith(".js")) return;
+
+        let routeInfo = require(`./routes/${route}`);
+        for (const method in routeInfo.methods) {
+            const func = routeInfo.methods[method];
+
+            app[method](routeInfo.path, (req, res) => func(req, res, global));
+        }
+        console.log(routeInfo);
+    });
+});
+
+client.login(process.env.discord_token)
