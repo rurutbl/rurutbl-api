@@ -8,7 +8,7 @@ const global = { totalBusStops: totalBusStops, cache: {} };
 
 const app = express();
 
-app.listen(3000, () => {
+app.listen(80, () => {
 	console.log("API server is on");
 });
 app.use(
